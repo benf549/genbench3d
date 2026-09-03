@@ -4,16 +4,26 @@ molconfviewer - Visualize molecule conformations in Jupyter
 
 __version__ = "0.1.0"
 
-import ipywidgets
-import nglview
+# bfry: the Jupyter 3D-viewer deps (ipywidgets / nglview / IPython) are optional. The
+# geometry + scoring path never constructs MolConfViewer, so import them lazily — this lets
+# the package pip-install and import on a headless machine with no Jupyter stack (previously
+# this module forced the genbench3d_stubs/nglview shim onto every import of genbench3d.utils).
+try:
+    import ipywidgets
+    import nglview
+    from IPython.display import display
+    from ipywidgets import interact, fixed
+    from nglview import NGLWidget
+    _VIEWER_AVAILABLE = True
+except ImportError:  # pragma: no cover - viewer is optional
+    ipywidgets = nglview = display = interact = fixed = None
+    NGLWidget = 'NGLWidget'  # keep get_viewer's return annotation a valid forward-ref
+    _VIEWER_AVAILABLE = False
 
-from IPython.display import display
-from ipywidgets import interact, fixed
 from rdkit.Chem.rdchem import Mol
 from rdkit.Chem.rdDepictor import Compute2DCoords
 from typing import Tuple, List, Dict, Any
 from rdkit.Chem.rdMolAlign import AlignMolConformers
-from nglview import NGLWidget
 
 class MolConfViewer():
     """Class to generate views of molecule conformations

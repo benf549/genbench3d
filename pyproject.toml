@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "genbench3d-strain"
+version = "0.2.0"
+description = "Standalone torsion-strain (s-value) pose scorer, forked from GenBench3D (Baillif et al. 2024)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Benjamin Fry" }]
+keywords = ["cheminformatics", "docking", "pose", "torsion", "strain", "genbench3d"]
+dependencies = [
+    "rdkit",
+    "numpy",
+    "scipy",
+    "scikit-learn",
+    "pandas",
+    "tqdm",
+    "python-dotenv",
+]
+
+[project.urls]
+Upstream = "https://github.com/bbaillif/genbench3d"
+
+[project.scripts]
+sscore = "genbench3d.pose_scorer:main"
+
+# Only the importable package is installed — the fork keeps upstream's loose top-level
+# benchmark scripts / notebooks / test_set in the tree, but they are not part of the wheel.
+[tool.setuptools.packages.find]
+include = ["genbench3d*"]
+
+[tool.setuptools.package-data]
+# Ship the chunked reference weights + manifests + pattern counts as package data.
+genbench3d = [
+    "data/weights/*/*.part*",
+    "data/weights/*/manifest.json",
+    "data/weights/*/*_pattern_counts.json",
+]

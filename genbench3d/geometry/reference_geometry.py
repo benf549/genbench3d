@@ -55,13 +55,16 @@ class ReferenceGeometry():
     
     
     def read_densities(self) -> dict[str, KernelDensities]:
-        values = self.read_values()
-        if not os.path.exists(self.kernel_densities_filepath):
-            kernel_densities = self.compute_densities(values)
-        else:
+        # bfry: load the cached KDE pickle directly when present (the shipped / standalone
+        # scorer case). The original always called read_values() first; with the ~60-250 MB
+        # <name>_geometry_values.p absent that forces a full recompute over self.source — and
+        # a scorer constructed with an empty MolListSource would then build empty/wrong
+        # densities. Cached kernel densities are self-contained and need no values pickle.
+        if os.path.exists(self.kernel_densities_filepath):
             with open(self.kernel_densities_filepath, 'rb') as f:
-                kernel_densities = pickle.load(f)
-        return kernel_densities
+                return pickle.load(f)
+        values = self.read_values()
+        return self.compute_densities(values)
     
     
     def compute_values(self) -> dict[str, Values]:

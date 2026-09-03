@@ -1,0 +1,21 @@
+# Reference KDE pickles are shipped CHUNKED (*.part*) and reassembled on first use.
+# The reassembled full pickle and the values pickle are derived — never commit them.
+genbench3d/data/weights/*/*_geometry_kernel_densities.p
+genbench3d/data/weights/*/*_geometry_values.p
+genbench3d/data/weights/*/*.tmp
+
+# Secrets / local config
+.env
+
+# CCDC-licensed CSD data and any reference derived from it must NOT be committed.
+**/CSD_Drug_Subset.mol2
+**/csd_drug_ref_*.p
+refdata/csd_drug/
+
+# Python build / cache artifacts
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv*/

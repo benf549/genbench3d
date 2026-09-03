@@ -1,273 +1,139 @@
-# GenBench3D
-Benchmarking deep learning models generating molecules in 3D. The details of metrics computed, specifically the Validity3D, and results of our benchmark on 6 models are available in our manuscript on [arxiv](https://arxiv.org/abs/2407.04424) and this is the package containing all the code to benchmark your models!
+# genbench3d-strain — standalone torsion-strain pose scorer
 
-## Changelog
-12-04-2025: I noticed some inconsistencies with the generalized patterns that lead to underestimation of the Validity3D. I decided to add a `use_generalized_pattern argument` in the `ReferenceGeometry`, setting the default to `False`.  
-This leads to more "new patterns" that are considered 3D-valid by default, but this reduces the risk to underestimate the Validity3D.  
-The initial reason behind generalization was to consider invalid bonds or angles from patterns that are new (or without enough data) but with abherent bond length or valence angles (i.e. a C-C bond of 1.0 Angstrom would be considered valid if the neighborhood around these are novel). But in the case of ring systems, or aromaticity/resonance, generalizing might lead to unexpected scenarios.  
-Examples: A bond between two carbons that are part of the same 5-membered rings will have the same generalized pattern as a bond between two carbons that each belong to a different 5-membered ring.
+A fork of [GenBench3D](https://github.com/bbaillif/genbench3d) (Baillif et al. 2024,
+[arXiv:2407.04424](https://arxiv.org/abs/2407.04424)) packaged as a small, installable
+**pose scorer**. It computes the paper's **s-value** — the geometric mean of per-geometry
+*q-values* (a value's KDE likelihood normalised by the density's mode) against a reference
+conformer library — with the default configured as a **torsional-strain reward** for
+protein–ligand design poses.
 
-## Main requirements
-We recommend to install the genbench3d environement, but here is a list of main requirements:
-- Python > 3.9
-- RDKit > 2022.09 (molecule handling + 2022.09 required for rdDetermineBonds)
-- openbabel (for molecule protonation + second bond determination option)
-- vina (for Vina docking score)
-- [ADFRsuite](https://ccsb.scripps.edu/adfr/downloads/) (for Vina protein preparation)
-- meeko (for ligand preparation for Vina)
-- mdanalysis (for protein extraction)
-- PDBFixer (fix the chain identification that is duplicated in CrossDocked files)
-- access to Schrodinger Glide CLI (optional)
-- [csd python api](https://downloads.ccdc.cam.ac.uk/documentation/API/installation_notes.html) (for Gold PLP score, optional)
+Input is a **PDB complex + the ligand SMILES**. The ligand is pulled from the PDB and its bond
+orders assigned from the SMILES template (`AssignBondOrdersFromTemplate`), with a halogen/H
+over-bond prune for robustness on predicted/minimized poses.
 
-## Installation
-I might put it on pip/conda if I have time, but for now it is a standalone. 
-For installation, we recommend using mamba instead of conda that does the same job but much faster!
-Run these commands to download genbench3d, then install in development mode using pip:  
+> This fork adds `genbench3d.pose_scorer` (+ the `sscore` CLI), a composable reference layer,
+> and the bundled PDBBind/LigBoundConf weights. The upstream benchmark code is untouched and
+> stays importable. See `LICENSE` (MIT) and the upstream repo for attribution.
+
+## What it measures
+
+The paper's headline s-value covers **bonds + valence angles** and deliberately *excludes*
+torsions (binding-induced torsional strain is legitimate, not a geometry error). This tool's
+default is the mirror image — a **torsion s-value** over the freely-varying dihedrals — which
+we validated as a strain reward: it separates crystal from strained design poses and, within a
+single molecule, tracks an independent torsion-strain metric for 100% of ligands tested.
+
+**Default recipe:** `geometry=torsion`, `torsions=nonring`, `tiers=exact+gen_outer`,
+`reference=pdbbind_full`. `s_value ∈ [0,1]`; higher = less strained (more reference-like).
+
+Reference choice (crystal−design gmean(q) separation, bigger = better discriminator):
+
+| reference (`--reference`) | design coverage | separation |
+|---|---|---|
+| **`pdbbind_full`** (default, 19.4k, bundled) | 92.5% | **+0.222** |
+| `ligboundconf` (paper's open ref, bundled) | 86.8% | +0.175 |
+| CSD-drug (external, licensed) | 77.6% | +0.121 |
+
+Generalization tiers and the ring/rotatable choice matter: `nonring` + `exact+gen_outer`
+(dropping the aggressive inner-neighbour tier and geometrically-stereotyped ring torsions)
+is the strongest torsion discriminator we measured.
+
+## Install
+
 ```bash
-git clone https://github.com/bbaillif/genbench3d.git
-cd genbench3d
-mamba env create -f environment.yml
-mamba activate genbench3d
-pip install -e . # install genbench3d in current environment
+pip install -e .        # editable is recommended — avoids copying ~420 MB of weights into site-packages
+# or:  pip install .
 ```
 
-Before using GenBench3D, you must choose a source of reference 3D data to be used by the Validity3D metric. The current options are:
-- LigBoundConf PDB subset (minimized version): Publicly available, download [here](https://pubs.acs.org/doi/suppl/10.1021/acs.jcim.0c01197/suppl_file/ci0c01197_si_002.zip). Then, set its path in the data/ligboundconf_path in the config/default.yaml file
-- CSD Drug: Used in our manuscript, requires access to the CSD data and [CSD Python API](https://downloads.ccdc.cam.ac.uk/documentation/API/). You can download the drug subset [here](https://ars.els-cdn.com/content/image/1-s2.0-S0022354918308104-mmc2.zip)
-- MolList: Any RDKit molecule list you want; Just have a name for it ! See the Scripting section.
+The large reference KDE pickles are committed **chunked** (`*.part*`, < 50 MB each, under
+GitHub's limit) and **reassembled on first use** into the package's `data/weights/` dir
+(the reassembled `.p` is git-ignored). No git-lfs needed.
 
-If you plan to compare generated molecules to training molecules for models benchmarked in our work, you need to download CrossDocked: 
-The original CrossDocked v1.1 dataset can be downloaded from [here](http://bits.csb.pitt.edu/files/crossdock2020/) (make sure you have enough space because there are a lot of files), while the processed CrossDocked dataset (extracting pockets and ligands only for RMSD < 1A) used in e.g. Pocket2Mol can be downloaded [here](https://drive.google.com/drive/folders/1CzwxmTpjbrt83z_wBzcQncq84OVDPurM). 
+## Usage
 
-You can run the convert_crossdocked_split.py script with another conda environment you own that has pytorch installed to transform the datasplit (in .pt pickle format containing torch objects) to a .p format without torch object to be run with minimal dependancies with the provided genbench3d environment.
+Single pose:
 
-Finally, change the paths of the different data sources and executable in the config/default.yaml (or copy/paste this file and change it accordingly)
-
-## Basic Usage
-
-A basic usage is given by the sb_benchmark_mols.py script. We provide an example to benchmark all metrics :
 ```bash
-python sb_benchmark_mols.py -c config/default.yaml -i examples/pocket2mol_generated_2z3h.sdf -o results_pocket2mol_generated_2z3h.json -p test_set/BSD_ASPTE_1_130_0/2z3h_A_rec.pdb -n test_set/BSD_ASPTE_1_130_0/2z3h_A_rec_1wn6_bst_lig_tt_docked_3.sdf --do_conf_analysis
+sscore --pdb complex.pdb --smiles "Cc1ccccc1C(=O)N2CCOCC2"
+# s_value        0.5834
+# n_geometries   23
+# geometry       torsion (nonring torsions, tiers=exact+gen_outer)
+# reference      pdbbind_full (policy=primary)
+
+sscore --pdb complex.pdb --smiles "..." --json          # machine-readable
+sscore --pdb complex.pdb --smiles "..." --per-geometry  # per-torsion q breakdown
+sscore --pdb complex.pdb --smiles "..." --resname auto  # ligand resname isn't LIG
 ```
 
-- `-i` is the input sdf filepath containing the molecules to benchmark.
-- `-o` is the output json filepath to store the benchmark results.
-- `-p` is the pdb structure filepath for the protein target of interest that was used for molecule generation
-- `-n` is the native ligand filepath (to locate the pocket)
-- `--do_conf_analysis` to compute all metrics (otherwise, only computes the structure-based metrics)
+Batch (CSV with `pdb,smiles[,id]` columns):
 
-By default, the `-s` (reference source) argument is set to `ligboundconf`, which is the publicly available. You can set to `csd_drug` if you have CSD access and the CSD Python API.
-
-By default, only Vina is computed. To compute Glide scores, add the `--glide` argument. To compute Gold PLP scores, add the `--gold` argument. 
-
-To compute the structure-based metrics only on 3D-valid molecules, add the `--valid_only` argument (requires the `--do_conf_analysis` argument).
-
-To perform the analysis on relaxed (local pocket-ligand minimization), add the `-m` argument.
-
-A simpler version without structure-based metrics is given in benchmark_mols.py script. We provide an example:
 ```bash
-python benchmark_mols.py -c config/default.yaml -i examples/pocket2mol_generated_2z3h.sdf -o results_pocket2mol_generated_2z3h.json
-```
-Here again you can use the `-m` argument, but if that's the case don't forget to include the `-p` (pdb_structure) and `-n` (native ligand)
-
-Use the `-h` argument for a recap of all possible arguments. If you have any question or find some bugs, don't hesitate to open a GitHub Issue!
-
-## Reproduce the paper results
-
-You can download the data used in the manuscript on [figshare](https://figshare.com/articles/dataset/Data_for_Benchmarking_structure-based_3D_generative_models_with_GenBench3D/26139496)
-
-I produced the paper results using the benchmark.py, benchmark_baselines.py and structure_based_benchmark.py scripts. I created classes to handle the retrieval of generated molecules (and minimization) for each model, and benchmarked for each target of the 100 targets in the CrossDocked test set (minus 24 targets for which ResGen generated no molecules). All targets in test_set/ligand_filenames.txt, and the actual subset used for benchmarking in test_set/ligand_filenames_subset.txt, the latter file was generated with `python get_test_subset.py`. 
-
-Analysis of the results was done with benchmark.ipynb, structure_based_benchmark.ipynb and pattern_distributions.ipynb (not the cleanest notebooks, but you should be able to run it with the genbench3d environement).
-
-## Scripting
-
-The first step is to load the configuration file to indicate the working directories and default parameters.
-```python
-import yaml
-config_path = 'config/default.yaml' # change path accordingly
-config = yaml.safe_load(open(args.config_path, 'r'))
+sscore --batch poses.csv --nproc 8 --out scores.csv
 ```
 
-The second step is to setup a reference geometry from a data source. The CSDDrug source was used in our manuscript, but you can define any reference from a list of molecules or sdf file. We provide an example for LigBoundConf, a public subset of the PDB with high quality structural data.
+Library:
+
 ```python
-from genbench3d.data.source import SDFSource, MolListSource
-from genbench3d.geometry import ReferenceGeometry
-
-# The values and kernel densities used to compute the Validity3D are 
-# saved in files for fast processing, the name allows to retrive them
-ligboundconf_name = 'LigBoundConf'
-
-ligboundconf_path = config['data']['ligboundconf_path'] # Set accordingly
-source = SDFSource(ligands_path=ligboundconf_path,
-                    name=ligboundconf_name)
-
-# Or using a mol list
-source_mol_list = Chem.SDMolSupplier(ligboundconf_path, removeHs=False)
-source = MolListSource(mol_list=source_mol_list,
-                        name=ligboundconf_name)
-
-reference_geometry = ReferenceGeometry(source=source, 
-                                        root=config['benchmark_dirpath'], 
-                                        minimum_pattern_values=config['genbench3d']['minimum_pattern_values'],)
-```
-The root argument is used to save the values and kernel densities for the extracted reference geometry, and the minimum pattern values is the number of values required for a pattern to have its kernel density computed (if lower than 50, the default behaviour during validity3D evaluation is to simplify the pattern, and if simplified, to consider the geometry as valid in the absence of sufficient data)
-
-The main usage is to compute all metrics from a list of RDKit molecules `mol_list`:
-```python
-from genbench3d import GenBench3D
-# mol_list is a list of RDKit molecules
-benchmark = GenBench3D(reference_geometry=reference_geometry,
-                        config=config['genbench3d'])
-results = benchmark.get_results_for_mol_list(mol_list)
+from genbench3d.pose_scorer import load_ligand, s_score
+mol = load_ligand("complex.pdb", "Cc1ccccc1C(=O)N2CCOCC2")
+print(s_score(mol)["s_value"])
+# the paper's validity s-value (bonds+angles) instead:
+print(s_score(mol, geometry="bond_angle")["s_value"])
 ```
 
-Under the hood, the GenBench3D is transforming the molecule list (generated molecules or training molecules) into a `ConfEnsembleLibrary`, a structure that groups the conformations of the same molecule (i.e. molecule topological graph and stereochemistry) into unique `ConfEnsemble` (wrapper around a single RDKit molecule having multiple Conformer), under a default name that is the SMILES representation
-```python
-from conf_ensemble import ConfEnsembleLibrary
-cel = ConfEnsembleLibrary.from_mol_list(mol_list)
-```
-`cel.library` is a dictionary in the form {SMILES (or other specified name): conf_ensemble}  
-`conf_ensemble.mol` gives the RDKit molecule containing each listed conformation of that molecule in the original `mol_list`
+Knobs: `--geometry {torsion,bond_angle,all}`, `--torsions {nonring,rotatable,all}`,
+`--tiers exact,gen_outer[,gen_inner]`, `--no-generalize`.
 
-To compute metrics that depends on the training molecules (e.g. training similarity, novelty2D and 3D), you need to set the training mols with the corresponding method before running the get_results:
-```python
-# training_mols is a list of RDKit molecules corresponding to training ligands
-training_cel = ConfEnsembleLibrary.from_mol_list(training_mols)
-benchmark.set_training_cel(training_cel)
-```
+## References — bundled, external, and merged
 
-When dealing with pocket-based generative models, you can use the `SBGenBench3D` version to add metrics related to activity. This new object needs the pocket (extracted from the protonated = "clean" protein produced during Vina processing) and native ligands (as `native_ligand` RDKit molecule) as input.
-You can setup the Vina calculation by creating a `VinaProtein` object: this legacy class preprocess the raw pdb files from CrossDocked (select protein only, add hydrogens) and generate pdbqt files for Vina input. 
-You can also setup the Glide calculation with a `GlideProtein` or a Gold calculation with a `VinaProtein`. The benchmark is setup as followed
+`--reference` accepts bundled presets (`pdbbind_full`, `ligboundconf`), a **path** to any
+reference directory, a registered external alias, or several joined with `+` to **merge**:
 
-```python
-from genbench3d import SBGenBench3D
-from genbench3d.data.structure import VinaProtein, Pocket, GlideProtein
-# native_ligand is a RDKit molecule
-# original_structure_path is a string pdb path to the initial protein file
-vina_protein = VinaProtein(pdb_filepath=original_structure_path,
-                            prepare_receptor_bin_path=config['bin']['prepare_receptor_bin_path'],)
-glide_protein = GlideProtein(pdb_filepath=vina_protein.protein_clean_filepath,
-                            native_ligand=native_ligand,
-                            glide_output_dirpath=config['glide_working_dir'],
-                            glide_path=config['bin']['glide_path'],
-                            structconvert_path=config['bin']['structconvert_path'],)
-pocket = Pocket(pdb_filepath=vina_protein.protein_clean_filepath, 
-                native_ligand=native_ligand,
-                distance_from_ligand=config['pocket_distance_from_ligand'])
-sb_benchmark = SBGenBench3D(reference_geometry=reference_geometry,
-                            config=config['genbench3D'],
-                            pocket=pocket,
-                            native_ligand=native_ligand)
-sb_benchmark.setup_vina(vina_protein,
-                        config['vina'],
-                        add_minimized=True)
-sb_benchmark.setup_glide(glide_protein,
-                            glide_path=config['bin']['glide_path'],
-                            add_minimized=True)
-sb_benchmark.setup_gold_plp(vina_protein)
-sb_benchmark.set_training_cel(training_cel)
-results = sb_benchmark.get_results_for_mol_list(mols=gen_mols,
-                                                n_total_mols=n_total_mols)
+```bash
+sscore --reference ligboundconf --pdb c.pdb --smiles "..."
+sscore --reference /data/refs/csd_drug --pdb c.pdb --smiles "..."      # external, by path
+sscore --reference pdbbind_full+/data/refs/csd_drug --pdb c.pdb --smiles "..."  # merged
 ```
 
-Additionnally, you can relax molecules inside the binding pocket (i.e. local energy minimization using MMFF94s forcefield, keeping protein atom fixed and allowing up to 1 Angstrom ligand heavy atom deviation, maximum 1000 steps) with the ComplexMinimizer:
+Register external references (e.g. CSD data that can't be committed) in `.env`:
 
-```python
-from genbench3d.data import ComplexMinimizer
-# mol is a RDKit molecule with a single conformer
-complex_minimizer = ComplexMinimizer(pocket,
-                                    config=config['minimization'])
-mini_mol = complex_minimizer.minimize_ligand(mol)
+```
+GB3D_EXTRA_REFERENCES=csd=/data/refs/csd_drug
+```
+then `--reference pdbbind_full+csd`. List what's available with `sscore --list-references`.
+
+**Merge policy** (`--policy`, default `primary`): `primary` is a *layered lookup* — the first
+reference covering a pattern wins — so a primary reference (PDBBind) keeps its sharp density
+and a secondary (CSD) only fills gaps. This extends coverage **without** the dilution that
+blending KDEs into one distribution causes. `max_q` / `min_q` take the most permissive /
+conservative q among covering references.
+
+## Building your own reference
+
+```bash
+# LigBoundConf-style single SDF
+python scripts/build_reference.py --sdf S2_LigBoundConf_minimized.sdf \
+    --name ligboundconf_ref --out refdata/ligboundconf_ref
+# PDBBind-style SDF glob, holding out scored complexes
+python scripts/build_reference.py --sdf-glob '/db/PDBBind/**/*_ligand.sdf' \
+    --exclude-holo-dir /path/pdbbind/min --name pdbbind_full_ref --out refdata/pdbbind_full_ref
+# CSD MOL2 dump (see below)
+python scripts/build_reference.py --mol2 CSD_Drug_Subset.mol2 --csd-prep \
+    --name csd_drug_ref --out refdata/csd_drug
 ```
 
-Aggregated compiled metrics can be computed for the benchmark results:
-```python
-import numpy as np
-import pandas as pd
-summary = {}
-for metric_name, values in results.items():
-    if isinstance(values, dict): # e.g. Ring proportion
-        for key, value in values.items():
-            summary[metric_name + str(key)] = value
-    elif isinstance(values, list):
-        summary[metric_name] = np.nanmedian(values) # values can have nan
-    else: # float or int
-        summary[metric_name] = values
-print(summary)
-```
+To ship a reference bundled: `python scripts/chunk_weights.py --src <ref_dir> --name <name>
+--out genbench3d/data/weights/<preset>` and add the preset to `genbench3d/references.py`.
 
-## GenBench3D parameters
+### CSD (licensed — not committed)
 
-Can be found in the config/default.yaml file:
+The CSD Drug Subset is CCDC-licensed; its MOL2 dump and any reference **derived** from it are
+git-ignored and must be regenerated locally. Copy `.env.example` → `.env`, set `CSDHOME`
+(and, if the host isn't already activated, `CCDC_LICENSING_CONFIGURATION`), then run
+`scripts/csd_extract_drug_subset.py` in the CCDC `csd-python-api` python to produce the MOL2,
+and build the reference with `build_reference.py --mol2 ... --csd-prep`.
 
-| Parameter | Definition |
-| --- | --- |
-| minimum_pattern_values | Minimum number of values for a geometric pattern to define a Kernel Density for the q-value (i.e. normalized likelihood) computation |
-| tfd_threshold | Minimum value for Torsion Fingerprint Deviation between 2 conformers to consider them different (for Uniqueness3D and Novelty3D definitions) |
-| q_value_threshold | Minimum q-value for a value for a geometric pattern to be considered as valid |
-| steric_clash_safety_ratio | The minimal distance between two atoms (as computed using vdW radii) is multiplied by this safety ratio before clash detection (clash = distance < minimum) |
-| maximum_ring_plane_distance | Minimum perpendicular distance for an aromatic ring atom to the plane (computed with SVG) |
-| consider_hydrogens | Consider hydrogens in the geometric patterns. Default to False, as most methods don't generate hydrogen atom positions, and these can be easily predicted with RDKit for instance |
-| include_torsions_in_validity3D | Whether to include torsions in the validity3D (q-value aggregation). Default to False, as the profile of torsions between the reference and generated molecules (adapted to a given target) is different |
-| add_minimized_docking_scores | Whether to include molecule adjustement for docking score (Vina and Glide) computation |
-| overwrite_results | Whether to overwrite the results (for the benchmark.py and structure_based_benchmark.py to reproduce paper results)
+## License
 
-## Implemented metrics
-
-### Based on topological graph (traditionally used to evaluate SMILES or molecular graph generators)
-
-| Metric | Definition |
-| --- | --- |
-| Validity2D | Fraction of molecules parsed by RDKit (the n_total_mols can be setup manually in all get_metrics functions) |
-| Uniqueness2D | Fraction of unique molecules (based on SMILES with stereochemistry embeded) |
-| Novelty2D | Fraction of molecules with a stereo-SMILES not in training molecules (if input) |
-| Diversity2D | Average Tanimoto dissimilarity (1 - similarity) of Morgan Fingerprints radius 3 with stereochemistry considered between all generated molecules|
-| Ring size proportion | Distribution of the proportion of observed ring sizes |
-| Molecular weight (MW) | Self-explanatory |
-| logP | Using RDKit |
-| SAScore | Using RDKit implementation of SAScore |
-| Quantitative Estimate of Drug-likeness (QED) | Using RDKit implementation of QED |
-
-### Based on molecular 3D conformation
-
-| Metric | Definition |
-| --- | --- |
-| Validity3D | Fraction of molecular conformations with valid bond lengths and valence angles, based on kernel density estimations from values observed in the CSD Drug Subset, see `Validity3D` class for details, flat aromatic rings and no intramolecular steric clash |
-| Uniqueness3D | Fraction of (3D-valid by default) unique conformations based on Torsion Fingerprint Deviation (TFD) with a default threshold of 0.2. |
-| Novelty3D | Fraction of (3D-valid by default) conformations different from those observed in the training set (only on the set of common molecules between training and generated)  |
-| Diversity3D | Average interconformation deviation computed using the TFD (on 3D-valid by default)|
-| MMFF94s strain energy | Using up to 1000 minimization step, computed using the MMFF94s RDKit implementation |
-
-### Pocket-based metrics (based on a given protein pocket and native ligand)
-
-| Metric | Definition |
-| --- | --- |
-| Steric clash | Fraction of molecules clashing with the protein |
-| Out of pocket | Fraction of molecules having a centroid 10 Angstrom away from the native ligand centroid |
-| Absolute Vina score | Using Vina Python package |
-| Vina score relative to test ligand | Using Vina Python package |
-| Absolute Gold PLP score | Using CSD Python API, CCDC tools required |
-| Gold PLP score relative to test ligand | Using CSD Python API, CCDC tools required |
-| Absolute Glide score | Requires Schrodinger Glide command line interface |
-| Glide score relative to test ligand | Requires Schrodinger Glide command line interface |
-
-## Previous versions details
-
-Earlier versions of GenBench3D used the ESPSIM and Interaction FingerPrints (IFP), that are commented out in the main code, we decided to put the emphasis on scoring functions
-
-You have different ways of inputing molecules in the benchmark.
-If the model generated xyz coordinates in an ASE db (i.e. GSchNet) you can use the ASEDBReader
-```python
-ase_db_path = "your favorite path"
-ase_reader = ASEDBReader(ase_db_path)
-```
-
-This reader is directly embedded in the benchmark:
-```python
-benchmark = GenBench3D(reference_geometry=reference_geometry,
-                        config=config['genbench3d'])
-metrics = benchmark.get_metrics_for_ase_db(filepath=ase_db_path,
-                                            cel_name='generated_molecules')
+MIT (inherited from upstream GenBench3D). Bundled references derive from open data (PDBBind,
+LigBoundConf). CSD-derived references are not distributed here.

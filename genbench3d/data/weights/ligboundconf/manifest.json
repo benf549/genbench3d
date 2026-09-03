@@ -1,0 +1,12 @@
+{
+  "ligboundconf_ref_geometry_kernel_densities.p": {
+    "sha256": "49415b8b036dcf5f3cf583e1822444a3990d63a4ccbebc140dd86a2d7a0df41c",
+    "bytes": 160592250,
+    "parts": [
+      "ligboundconf_ref_geometry_kernel_densities.p.part00",
+      "ligboundconf_ref_geometry_kernel_densities.p.part01",
+      "ligboundconf_ref_geometry_kernel_densities.p.part02",
+      "ligboundconf_ref_geometry_kernel_densities.p.part03"
+    ]
+  }
+}

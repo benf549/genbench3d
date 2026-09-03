@@ -1,0 +1,14 @@
+{
+  "pdbbind_full_ref_geometry_kernel_densities.p": {
+    "sha256": "39597dc208a108b8956bc23b5e16f8f2c50e61269b9d246b5e6b58d026fe424a",
+    "bytes": 267123953,
+    "parts": [
+      "pdbbind_full_ref_geometry_kernel_densities.p.part00",
+      "pdbbind_full_ref_geometry_kernel_densities.p.part01",
+      "pdbbind_full_ref_geometry_kernel_densities.p.part02",
+      "pdbbind_full_ref_geometry_kernel_densities.p.part03",
+      "pdbbind_full_ref_geometry_kernel_densities.p.part04",
+      "pdbbind_full_ref_geometry_kernel_densities.p.part05"
+    ]
+  }
+}

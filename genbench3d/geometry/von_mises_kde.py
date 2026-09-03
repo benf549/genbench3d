@@ -1,6 +1,8 @@
 # Standard imports
 import math
 import numpy as np
+if not hasattr(np, 'trapz'):  # numpy>=2 compat
+    np.trapz = np.trapezoid
 from scipy.special import iv
 
 # Adapted from https://github.com/engelen/vonmiseskde/blob/master/vonmiseskde/__init__.py

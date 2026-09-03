@@ -1,4 +1,4 @@
-from .complex_minimizer import ComplexMinimizer
+# from .complex_minimizer import ComplexMinimizer  # bfry: needs MDAnalysis/openmm, not used for geometry
 # from .generated_sample_reader import ASEDBReader
 # from .geom import GEOMDrugs
 # from .ligand_expo import LigandExpo
