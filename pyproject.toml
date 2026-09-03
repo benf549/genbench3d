@@ -26,6 +26,7 @@ Upstream = "https://github.com/bbaillif/genbench3d"
 
 [project.scripts]
 sscore = "genbench3d.pose_scorer:main"
+pose-validity = "genbench3d.pose_validity:main"
 
 # Only the importable package is installed — the fork keeps upstream's loose top-level
 # benchmark scripts / notebooks / test_set in the tree, but they are not part of the wheel.

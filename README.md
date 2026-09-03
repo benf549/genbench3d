@@ -84,6 +84,40 @@ print(s_score(mol, geometry="bond_angle")["s_value"])
 Knobs: `--geometry {torsion,bond_angle,all}`, `--torsions {nonring,rotatable,all}`,
 `--tiers exact,gen_outer[,gen_inner]`, `--no-generalize`.
 
+## Pose validity (Validity3D)
+
+A second CLI, `pose-validity`, computes GenBench3D's **Validity3D**: a pose is 3D-valid when every
+bond length and valence angle is geometrically valid (q > 0.001 against the reference), there is no
+intramolecular steric clash (vdW × 0.75, PoseBusters-style), and no aromatic/planar ring is puckered
+(> 0.1 Å from its mean plane). **Torsions are excluded** from the gate (binding strain is legitimate)
+and reported separately as the torsion strain s-value. Bond/angle lookups use **exact patterns only**
+(no generalization — the upstream author's fix against underestimating Validity3D). Verified to
+reproduce upstream GenBench3D `Validity3D` exactly.
+
+```bash
+pose-validity --pdb complex.pdb --smiles "..."       # valid True/False + invalid counts + clashes
+pose-validity --sdf ligand.sdf                        # SDF/MOL2 carry bond orders (no SMILES needed)
+pose-validity --pdb complex.pdb --smiles "..." --json --per-geometry
+```
+
+Batch — a **.txt of newline-separated file paths** → a CSV of results:
+
+```bash
+pose-validity --batch paths.txt --nproc 8 --out validity.csv
+```
+
+Each line is a path, or `path,smiles` (a PDB needs a SMILES via the 2nd field or a `<stem>.smi`
+sidecar; SDF/MOL2 load directly with their own bond orders). The reference weights load **once per
+worker** — no reload per pose (and a per-process cache reuses them across library calls too). CSV
+columns: `valid, n_invalid_bonds, n_invalid_angles, n_puckered_rings, n_clashes, n_new_patterns,
+validity_s_value, min_bond_q, min_angle_q, torsion_strain_s_value, n_heavy_atoms, error`.
+
+```python
+from genbench3d.pose_validity import evaluate_validity
+from genbench3d.pose_scorer import load_ligand
+print(evaluate_validity(load_ligand("complex.pdb", "..."))["valid"])
+```
+
 ## References — bundled, external, and merged
 
 `--reference` accepts bundled presets (`pdbbind_full`, `ligboundconf`), a **path** to any

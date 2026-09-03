@@ -36,6 +36,16 @@ BUNDLED = {
 DEFAULT_REFERENCE = "pdbbind_full"
 MERGE_POLICIES = ("primary", "max_q", "min_q")
 
+# Loaded references are cached by (abs dir, name) so a process loads each ~150-250 MB KDE pickle
+# only ONCE — repeated s_score / evaluate_validity calls (and batch rows) reuse it, rather than
+# re-unpickling per pose. use_generalized_patterns is set on the cached instance per call.
+_REF_CACHE = {}
+
+
+def clear_reference_cache():
+    """Drop all cached ReferenceGeometry objects (frees their KDE memory)."""
+    _REF_CACHE.clear()
+
 
 def _external_registry():
     """Named external references from the environment.
@@ -106,11 +116,16 @@ def load_reference(spec, use_generalized_patterns=True):
             f"unknown reference {spec!r}. Bundled presets: {list(BUNDLED)}; "
             f"registered external: {list(reg)}; or pass a directory / .p path.")
 
-    weights.ensure(ref_dir, name)  # reassemble committed chunks on first use; no-op otherwise
-    src = MolListSource(mol_list=[], name=name)
-    ref = ReferenceGeometry(source=src, root=ref_dir,
-                            minimum_pattern_values=MIN_PATTERN_VALUES,
-                            use_generalized_patterns=use_generalized_patterns)
+    key = (os.path.abspath(ref_dir), name)
+    ref = _REF_CACHE.get(key)
+    if ref is None:
+        weights.ensure(ref_dir, name)  # reassemble committed chunks on first use; no-op otherwise
+        src = MolListSource(mol_list=[], name=name)
+        ref = ReferenceGeometry(source=src, root=ref_dir,
+                                minimum_pattern_values=MIN_PATTERN_VALUES,
+                                use_generalized_patterns=use_generalized_patterns)
+        _REF_CACHE[key] = ref
+    ref.use_generalized_patterns = use_generalized_patterns  # cheap per-call toggle on the shared obj
     return label, ref
 
 
