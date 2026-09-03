@@ -65,11 +65,16 @@ sscore --pdb complex.pdb --smiles "..." --per-geometry  # per-torsion q breakdow
 sscore --pdb complex.pdb --smiles "..." --resname auto  # ligand resname isn't LIG
 ```
 
-Batch (CSV with `pdb,smiles[,id]` columns):
+Batch — a **.txt of newline-separated file paths**, one shared ligand via `--smiles`:
 
 ```bash
-sscore --batch poses.csv --nproc 8 --out scores.csv
+sscore --batch poses.txt --smiles "<smiles>" --nproc 8 --out scores.csv
 ```
+
+Each line is a path (or `path,smiles` to override per line). `sscore` runs on **any** ligand
+conformer in a PDB; a pose that genuinely can't be loaded (e.g. a distorted geometry no template
+match survives) gets **s_value 0** (the worst/most-strained score) with the reason in the `error`
+column, rather than crashing the batch. The reference loads **once per worker**.
 
 Library:
 

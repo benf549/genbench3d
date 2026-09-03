@@ -30,7 +30,7 @@ from rdkit import Chem
 from .geometry.geometry_extractor import GeometryExtractor
 from .geometry.clash_checker import ClashChecker
 from .references import load_reference, ReferenceSet, DEFAULT_REFERENCE
-from .pose_scorer import load_ligand, s_score, _gmean, _quiet_rdkit
+from .pose_scorer import load_ligand, load_any, _read_paths, s_score, _gmean, _quiet_rdkit
 
 # Validity3D defaults — genbench3d/params.py (Q_VALUE_THRESHOLD, CLASH_SAFETY_RATIO, ...).
 Q_VALUE_THRESHOLD = 0.001
@@ -168,65 +168,15 @@ def evaluate_validity(mol, reference=DEFAULT_REFERENCE, consider_hydrogens=CONSI
     return result
 
 
-# --------------------------------------------------------------------------- input loading
-def _sidecar_smiles(path):
-    smi_path = os.path.splitext(path)[0] + ".smi"
-    if os.path.exists(smi_path):
-        txt = open(smi_path).read().strip().split()
-        return txt[0] if txt else None
-    return None
-
-
-def load_any(path, smiles=None, resname="LIG"):
-    """Load a molecule from a path. SDF/MOL/MOL2 load with bond orders directly; a PDB needs a
-    SMILES (explicit arg, or a `<stem>.smi` sidecar) for template bond-order assignment."""
-    ext = os.path.splitext(path)[1].lower()
-    if ext in (".sdf", ".mol"):
-        m = next((x for x in Chem.SDMolSupplier(path, removeHs=False, sanitize=True) if x), None)
-        if m is None:
-            raise ValueError(f"no valid molecule in {path}")
-        return m
-    if ext == ".mol2":
-        m = Chem.MolFromMol2File(path, removeHs=False, sanitize=True)
-        if m is None:
-            raise ValueError(f"could not parse MOL2 {path}")
-        return m
-    if ext == ".pdb" or ext == ".ent":
-        smi = smiles or _sidecar_smiles(path)
-        if not smi:
-            raise ValueError(f"PDB input needs a SMILES (2nd column or {os.path.splitext(path)[0]}.smi)")
-        return load_ligand(path, smi, resname=resname)
-    raise ValueError(f"unsupported extension {ext!r} for {path} (use .sdf/.mol2/.pdb)")
-
-
-def _read_paths(txt_path):
-    """Parse the batch .txt: one entry per line, `path` or `path,smiles` / `path<whitespace>smiles`.
-    Blank lines and lines starting with '#' are ignored."""
-    rows = []
-    with open(txt_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "," in line:
-                path, smi = line.split(",", 1)
-                path, smi = path.strip(), smi.strip() or None
-            else:
-                parts = line.split(None, 1)
-                path, smi = parts[0], (parts[1].strip() if len(parts) > 1 else None)
-            rows.append((path, smi))
-    return rows
-
-
 # --------------------------------------------------------------------------- batch worker
 _W = {}
 
 
-def _winit(spec, consider_hs, include_torsions, with_strain, resname):
+def _winit(spec, consider_hs, include_torsions, with_strain, resname, batch_smiles):
     _quiet_rdkit()
     _W["reference"] = load_reference(spec.split("+")[0], use_generalized_patterns=False)
     _W.update(consider_hs=consider_hs, include_torsions=include_torsions,
-              with_strain=with_strain, resname=resname)
+              with_strain=with_strain, resname=resname, batch_smiles=batch_smiles)
 
 
 CSV_FIELDS = ["path", "valid", "n_invalid_bonds", "n_invalid_angles", "n_puckered_rings",
@@ -236,6 +186,7 @@ CSV_FIELDS = ["path", "valid", "n_invalid_bonds", "n_invalid_angles", "n_puckere
 
 def _weval(row):
     path, smi = row
+    smi = smi or _W.get("batch_smiles")   # per-line smiles overrides the shared batch --smiles
     base = {k: "" for k in CSV_FIELDS}
     base["path"] = path
     try:
@@ -263,7 +214,8 @@ def _build_parser():
     src.add_argument("--batch", help=".txt of newline-separated file paths (path[,smiles] per line)")
     src.add_argument("--pdb", help="single complex PDB (with --smiles)")
     src.add_argument("--sdf", help="single SDF/MOL2 file (bond orders from the file)")
-    p.add_argument("--smiles", help="ligand SMILES (required with --pdb)")
+    p.add_argument("--smiles", help="ligand SMILES; required with --pdb. With --batch it is applied to "
+                   "EVERY path (a per-line 'path,smiles' overrides it) — for a batch of one target ligand.")
     p.add_argument("--reference", default=DEFAULT_REFERENCE,
                    help="reference for bond/angle validity (single; default: %(default)s)")
     p.add_argument("--consider-hydrogens", action="store_true",
@@ -319,7 +271,8 @@ def main(argv=None):
 
     # batch
     rows = _read_paths(args.batch)
-    winit = (args.reference, args.consider_hydrogens, args.include_torsions, with_strain, args.resname)
+    winit = (args.reference, args.consider_hydrogens, args.include_torsions, with_strain,
+             args.resname, args.smiles)
     if args.nproc > 1:
         from multiprocessing import Pool
         with Pool(args.nproc, initializer=_winit, initargs=winit) as pool:

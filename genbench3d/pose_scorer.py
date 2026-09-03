@@ -59,12 +59,27 @@ DEFAULT_TIERS = ("exact", "gen_outer")
 
 
 # --------------------------------------------------------------------------- ligand loading
-def load_ligand(pdb_path, smiles, resname="LIG"):
-    """Load a ligand pose from a complex PDB + its SMILES.
+def _n_heavy(mol):
+    return sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() > 1)
 
-    ``resname`` selects the ligand residue (default ``"LIG"``); ``"auto"`` picks the residue
-    fragment whose heavy-atom count best matches the SMILES template. Coordinates are taken
-    as-is; bond orders/protonation come from the template.
+
+def _heavy_only(mol):
+    """A copy of `mol` with hydrogens dropped, conformer preserved (no sanitization)."""
+    rw = Chem.RWMol(mol)
+    for idx in sorted((a.GetIdx() for a in mol.GetAtoms() if a.GetAtomicNum() == 1), reverse=True):
+        rw.RemoveAtom(idx)
+    return rw.GetMol()
+
+
+def load_ligand(pdb_path, smiles, resname="LIG"):
+    """Load a ligand conformer from a PDB (complex or ligand-only) + its SMILES.
+
+    ``resname`` selects the ligand residue (default ``"LIG"``); if it is absent, or ``"auto"``,
+    the residue fragment whose heavy-atom count best matches the SMILES template is used (the
+    template match then validates the choice). Coordinates are taken as-is; bond orders come from
+    the template. Robust to arbitrary poses: the H-bearing template match is tried first, then a
+    heavy-atom-only match (which survives bad/missing H placement on distorted predicted poses).
+    Raises ValueError only if no template match can be found at all.
     """
     full = Chem.MolFromPDBFile(str(pdb_path), removeHs=False, sanitize=False)
     if full is None:
@@ -72,29 +87,78 @@ def load_ligand(pdb_path, smiles, resname="LIG"):
     frags = Chem.SplitMolByPDBResidues(full)
     if not frags:
         raise ValueError(f"no residues parsed from {pdb_path}")
-
     graph = Chem.MolFromSmiles(smiles)
     if graph is None:
         raise ValueError(f"RDKit could not parse SMILES: {smiles!r}")
-    template = Chem.AddHs(graph)
 
-    if resname == "auto":
-        target = graph.GetNumHeavyAtoms()
-        def heavy(fr):
-            return sum(1 for a in fr.GetAtoms() if a.GetAtomicNum() > 1)
-        rn = min(frags, key=lambda r: abs(heavy(frags[r]) - target))
-        lig = frags[rn]
-    else:
-        if resname not in frags:
-            raise ValueError(
-                f"residue {resname!r} not in {pdb_path}; found {sorted(frags)[:12]} "
-                f"(try --resname auto)")
+    if resname != "auto" and resname in frags:
         lig = frags[resname]
-
+    else:  # fragment closest in heavy-atom count to the template (validated by the match below)
+        target = graph.GetNumHeavyAtoms()
+        lig = frags[min(frags, key=lambda r: abs(_n_heavy(frags[r]) - target))]
     lig = prune_terminal_overbonds(lig)
-    bound = AllChem.AssignBondOrdersFromTemplate(template, lig)
-    Chem.SanitizeMol(bound)
-    return bound
+
+    try:  # attempt 1: full (H-bearing) template
+        bound = AllChem.AssignBondOrdersFromTemplate(Chem.AddHs(graph), lig)
+        Chem.SanitizeMol(bound)
+        return bound
+    except Exception:
+        pass
+    try:  # attempt 2: heavy-atom-only template (robust to H placement on distorted poses)
+        bound = AllChem.AssignBondOrdersFromTemplate(graph, _heavy_only(lig))
+        Chem.SanitizeMol(bound)
+        return bound
+    except Exception as e:
+        raise ValueError(f"no template match for ligand in {pdb_path}: {e}")
+
+
+def _sidecar_smiles(path):
+    smi_path = os.path.splitext(path)[0] + ".smi"
+    if os.path.exists(smi_path):
+        parts = open(smi_path).read().strip().split()
+        return parts[0] if parts else None
+    return None
+
+
+def load_any(path, smiles=None, resname="LIG"):
+    """Load a molecule from a path. SDF/MOL/MOL2 load with bond orders directly; a PDB uses the
+    given SMILES (or a ``<stem>.smi`` sidecar) for template bond-order assignment."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".sdf", ".mol"):
+        m = next((x for x in Chem.SDMolSupplier(path, removeHs=False, sanitize=True) if x), None)
+        if m is None:
+            raise ValueError(f"no valid molecule in {path}")
+        return m
+    if ext == ".mol2":
+        m = Chem.MolFromMol2File(path, removeHs=False, sanitize=True)
+        if m is None:
+            raise ValueError(f"could not parse MOL2 {path}")
+        return m
+    if ext in (".pdb", ".ent"):
+        smi = smiles or _sidecar_smiles(path)
+        if not smi:
+            raise ValueError(f"PDB input needs a SMILES (arg/2nd column or {os.path.splitext(path)[0]}.smi)")
+        return load_ligand(path, smi, resname=resname)
+    raise ValueError(f"unsupported extension {ext!r} for {path} (use .sdf/.mol2/.pdb)")
+
+
+def _read_paths(txt_path):
+    """Parse a batch .txt: one entry per line, ``path`` or ``path,smiles`` /
+    ``path<whitespace>smiles``. Blank lines and lines starting with '#' are ignored."""
+    rows = []
+    with open(txt_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "," in line:
+                path, smi = line.split(",", 1)
+                path, smi = path.strip(), (smi.strip() or None)
+            else:
+                parts = line.split(None, 1)
+                path, smi = parts[0], (parts[1].strip() if len(parts) > 1 else None)
+            rows.append((path, smi))
+    return rows
 
 
 # --------------------------------------------------------------------------- scoring
@@ -172,35 +236,23 @@ def s_score(mol, reference=DEFAULT_REFERENCE, geometry="torsion", torsions="nonr
 _WORKER = {}
 
 
-def _winit(spec, policy, gen, geometry, torsions, tiers, resname):
+def _winit(spec, policy, gen, geometry, torsions, tiers, resname, batch_smiles):
     _quiet_rdkit()
     _WORKER["refset"] = resolve(spec, policy=policy, use_generalized_patterns=gen)
-    _WORKER.update(geometry=geometry, torsions=torsions, tiers=tiers, resname=resname)
+    _WORKER.update(geometry=geometry, torsions=torsions, tiers=tiers, resname=resname,
+                   batch_smiles=batch_smiles)
 
 
 def _wscore(row):
-    idx, pdb, smi = row
+    path, smi = row
+    smi = smi or _WORKER.get("batch_smiles")   # per-line smiles overrides the shared batch --smiles
     try:
-        mol = load_ligand(pdb, smi, resname=_WORKER["resname"])
+        mol = load_any(path, smi, resname=_WORKER["resname"])
         r = s_score(mol, reference=_WORKER["refset"], geometry=_WORKER["geometry"],
                     torsions=_WORKER["torsions"], tiers=_WORKER["tiers"])
-        return dict(id=idx, pdb=pdb, s_value=r["s_value"], n_geometries=r["n_geometries"], error="")
-    except Exception as e:  # noqa: BLE001 — one bad pose must not kill the batch
-        return dict(id=idx, pdb=pdb, s_value=float("nan"), n_geometries=0,
-                    error=f"{type(e).__name__}: {e}")
-
-
-def _read_batch(path):
-    with open(path, newline="") as f:
-        reader = csv.DictReader(f)
-        cols = {c.lower(): c for c in (reader.fieldnames or [])}
-        if "pdb" not in cols or "smiles" not in cols:
-            raise ValueError(f"batch CSV must have 'pdb' and 'smiles' columns; got {reader.fieldnames}")
-        rows = []
-        for n, r in enumerate(reader):
-            idx = r[cols["id"]] if "id" in cols else str(n)
-            rows.append((idx, r[cols["pdb"]], r[cols["smiles"]]))
-    return rows
+        return dict(path=path, s_value=r["s_value"], n_geometries=r["n_geometries"], error="")
+    except Exception as e:  # noqa: BLE001 — an unloadable/unscoreable pose gets the worst score (0)
+        return dict(path=path, s_value=0.0, n_geometries=0, error=f"{type(e).__name__}: {e}")
 
 
 # --------------------------------------------------------------------------- CLI
@@ -210,9 +262,10 @@ def _build_parser():
         description="Torsion-strain (s-value) pose scorer over GenBench3D geometry references.")
     # not required at the argparse level so --list-references can run alone; validated in main()
     src = p.add_mutually_exclusive_group(required=False)
-    src.add_argument("--pdb", help="complex PDB file (with --smiles) for a single pose")
-    src.add_argument("--batch", help="CSV with columns pdb,smiles[,id] for many poses")
-    p.add_argument("--smiles", help="ligand SMILES (required with --pdb)")
+    src.add_argument("--pdb", help="complex/ligand PDB file (with --smiles) for a single pose")
+    src.add_argument("--batch", help=".txt of newline-separated file paths (path or 'path,smiles' per line)")
+    p.add_argument("--smiles", help="ligand SMILES; required with --pdb. With --batch it is applied to "
+                   "EVERY path (a per-line 'path,smiles' overrides it) — for a batch of one target ligand.")
     p.add_argument("--reference", default=DEFAULT_REFERENCE,
                    help="reference spec; '+' merges (e.g. 'pdbbind_full+/data/refs/csd_drug'). "
                         "Presets: pdbbind_full, ligboundconf. Default: %(default)s")
@@ -258,22 +311,31 @@ def main(argv=None):
         if not args.smiles:
             _build_parser().error("--smiles is required with --pdb")
         refset = resolve(args.reference, policy=args.policy, use_generalized_patterns=gen)
-        mol = load_ligand(args.pdb, args.smiles, resname=args.resname)
-        r = s_score(mol, reference=refset, geometry=args.geometry, torsions=args.torsions,
-                    tiers=tiers, per_geometry=args.per_geometry)
+        err = ""
+        try:
+            mol = load_any(args.pdb, args.smiles, resname=args.resname)
+            r = s_score(mol, reference=refset, geometry=args.geometry, torsions=args.torsions,
+                        tiers=tiers, per_geometry=args.per_geometry)
+        except Exception as e:  # unloadable/unscoreable pose -> worst score (0)
+            err = f"{type(e).__name__}: {e}"
+            r = dict(s_value=0.0, n_geometries=0, geometry=args.geometry, torsions=args.torsions,
+                     tiers=sorted(frozenset(tiers)), references=[args.reference], policy=args.policy)
         if args.json:
-            print(json.dumps(r, indent=2))
+            print(json.dumps({**r, "error": err} if err else r, indent=2))
         else:
             print(f"s_value        {r['s_value']:.4f}")
             print(f"n_geometries   {r['n_geometries']}")
             print(f"geometry       {r['geometry']} ({r['torsions']} torsions, "
                   f"tiers={'+'.join(r['tiers'])})")
             print(f"reference      {'+'.join(r['references'])} (policy={r['policy']})")
+            if err:
+                print(f"note           could not load pose -> s_value 0  ({err})")
         return 0
 
-    # batch
-    rows = _read_batch(args.batch)
-    winit_args = (args.reference, args.policy, gen, args.geometry, args.torsions, tiers, args.resname)
+    # batch: a .txt of file paths (one target ligand via --smiles; per-line 'path,smiles' overrides)
+    rows = _read_paths(args.batch)
+    winit_args = (args.reference, args.policy, gen, args.geometry, args.torsions, tiers,
+                  args.resname, args.smiles)
     if args.nproc > 1:
         from multiprocessing import Pool
         with Pool(args.nproc, initializer=_winit, initargs=winit_args) as pool:
@@ -282,7 +344,7 @@ def main(argv=None):
         _winit(*winit_args)
         results = [_wscore(row) for row in rows]
 
-    fields = ["id", "pdb", "s_value", "n_geometries", "error"]
+    fields = ["path", "s_value", "n_geometries", "error"]
     if args.json:
         payload = json.dumps(results, indent=2)
         (open(args.out, "w").write(payload) if args.out else sys.stdout.write(payload + "\n"))
@@ -294,8 +356,9 @@ def main(argv=None):
             w.writerow(r)
         if args.out:
             out.close()
-    n_ok = sum(1 for r in results if r["s_value"] == r["s_value"])
-    print(f"# scored {n_ok}/{len(results)} poses", file=sys.stderr)
+    n_loaded = sum(1 for r in results if not r["error"])
+    print(f"# scored {len(results)} poses ({n_loaded} loaded, {len(results) - n_loaded} -> s_value 0)",
+          file=sys.stderr)
     return 0
 
 
