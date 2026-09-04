@@ -201,6 +201,61 @@ class TorsionStrainLibrary:
         return {"pose_strain": pose, "n_torsions": len(per), "n_covered": n_cov, "per_torsion": per}
 
 
+# --------------------------------------------------------------------------- #
+# pose strain -> [0, 1] design reward  (saturating softplus shoulder)
+# --------------------------------------------------------------------------- #
+# Label-free calibration: real crystal ligands are, by definition, essentially unstrained, so we score a
+# large set of them and place the reward so a typical crystal earns ~full reward. The reward SATURATES at
+# 1 across the crystallographic region and only falls for poses more strained than real crystals:
+#
+#   r(s) = exp( -LAM * softplus(BETA*(s - REWARD_PLATEAU)) / BETA ),   LAM = ln2 / excess(REWARD_KNEE)
+#
+# i.e. r = 1.0 (flat) for s <= REWARD_PLATEAU, r = 0.5 at REWARD_KNEE, and r -> 0 for highly-strained
+# poses (with a gentle residual gradient in the tail, unlike a hard cut). Flattening the crystallographic
+# region keeps the reward from spending gradient — or trading against other objectives — on strain
+# differences that are below the noise floor of real crystals; it bites only on genuine outliers.
+#
+# The anchors below were calibrated on 4,788 PDBBind crystal ligands scored with the validated
+# union(custom-CSD + LigBoundConf) library at MIN_N=50 (PDBBind held out of the library, so non-circular):
+# REWARD_PLATEAU = 3.0 sits at ~p76 of that crystal pose-strain distribution and REWARD_KNEE = 4.95 at p95.
+# NOTE: the anchors live on the pose-strain scale of the reference actually used, so they are
+# library-specific. Scoring with a different --reference (e.g. `ligboundconf` alone, whose max-pool scale
+# runs lower than the union's) warrants recalibration — see calibrate_shoulder().
+REWARD_PLATEAU = 3.0     # strain <= this is "crystallographic" (~p76 of crystals) -> full reward
+REWARD_KNEE = 4.95       # crystal p95 -> r = 0.5
+REWARD_BETA = 8.0        # softplus corner sharpness (larger = sharper plateau edge)
+
+
+def _shoulder_excess(x, plateau: float, beta: float):
+    """softplus(beta*(x - plateau)) / beta — a smooth max(0, x - plateau). NaN propagates quietly."""
+    with np.errstate(invalid="ignore"):
+        return np.logaddexp(0.0, beta * (np.asarray(x, dtype=float) - plateau)) / beta
+
+
+def pose_reward(pose_strain, plateau: float = REWARD_PLATEAU, knee: float = REWARD_KNEE,
+                beta: float = REWARD_BETA):
+    """Map a pose strain energy to a smooth reward in [0, 1] with a plateau at 1 in the crystallographic
+    region (see the calibration note above). Full reward for strain <= `plateau`, r = 0.5 at `knee`,
+    decaying toward 0 for highly-strained poses. Accepts a scalar or array; NaN in -> NaN out. Higher
+    reward = lower strain."""
+    lam = np.log(2.0) / _shoulder_excess(knee, plateau, beta)
+    r = np.exp(-lam * _shoulder_excess(pose_strain, plateau, beta))
+    return float(r) if np.ndim(r) == 0 else r
+
+
+def calibrate_shoulder(crystal_energies, plateau_pct: float = 0.76, knee_pct: float = 0.95,
+                       beta: float = REWARD_BETA) -> Dict:
+    """Derive shoulder anchors for a chosen reference from the pose strains of REAL crystal ligands scored
+    with THAT reference: plateau = the `plateau_pct` percentile (default p76), knee = the `knee_pct`
+    percentile (default p95). Returns a dict usable directly as **kwargs to pose_reward()."""
+    s = np.asarray(crystal_energies, dtype=float)
+    s = s[np.isfinite(s)]
+    if s.size == 0:
+        raise ValueError("no finite crystal energies to calibrate on")
+    return {"plateau": float(np.quantile(s, plateau_pct)),
+            "knee": float(np.quantile(s, knee_pct)), "beta": float(beta)}
+
+
 def available_references() -> List[str]:
     if not os.path.isdir(_BUNDLED_DIR):
         return []
@@ -234,6 +289,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                    help=f"per-pattern support threshold (default {DEFAULT_MIN_N})")
     p.add_argument("--neutral-energy", type=float, default=None,
                    help="energy for torsions uncovered by all references (default: library median)")
+    p.add_argument("--reward-plateau", type=float, default=REWARD_PLATEAU,
+                   help=f"reward: strain plateau edge, full reward below (default {REWARD_PLATEAU})")
+    p.add_argument("--reward-knee", type=float, default=REWARD_KNEE,
+                   help=f"reward: strain at which reward = 0.5 (default {REWARD_KNEE}, crystal p95)")
+    p.add_argument("--reward-beta", type=float, default=REWARD_BETA,
+                   help=f"reward: softplus corner sharpness (default {REWARD_BETA})")
     p.add_argument("--list-references", action="store_true", help="list bundled libraries and exit")
     p.add_argument("--json", action="store_true", help="emit JSON (includes per-torsion detail)")
     p.add_argument("--out", help="batch mode: output CSV path (default stdout)")
@@ -256,10 +317,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         try:
             mol = _load_pose(path, args.smiles)
             r = lib.score_mol(mol)
+            r["path"] = path
         except Exception as e:  # unloadable pose -> NaN, never crash a batch
-            return {"path": path, "pose_strain": float("nan"), "n_torsions": 0,
-                    "n_covered": 0, "error": str(e)}
-        r["path"] = path
+            r = {"path": path, "pose_strain": float("nan"), "n_torsions": 0,
+                 "n_covered": 0, "error": str(e)}
+        r["reward"] = pose_reward(r["pose_strain"], plateau=args.reward_plateau,
+                                  knee=args.reward_knee, beta=args.reward_beta)
         return r
 
     if args.pdb:
@@ -267,13 +330,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.json:
             print(json.dumps(r))
         else:
-            print(f"pose_strain={r['pose_strain']:.4f}  n_torsions={r['n_torsions']}  "
-                  f"n_covered={r['n_covered']}")
+            print(f"pose_strain={r['pose_strain']:.4f}  reward={r['reward']:.4f}  "
+                  f"n_torsions={r['n_torsions']}  n_covered={r['n_covered']}")
         return 0
 
     paths = [ln.strip() for ln in open(args.batch) if ln.strip()]
     rows = [score_path(pt) for pt in paths]
-    fields = ["path", "pose_strain", "n_torsions", "n_covered", "error"]
+    fields = ["path", "pose_strain", "reward", "n_torsions", "n_covered", "error"]
     out = open(args.out, "w", newline="") if args.out else None
     w = csv.DictWriter(out or __import__("sys").stdout, fieldnames=fields, extrasaction="ignore")
     w.writeheader()

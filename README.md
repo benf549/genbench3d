@@ -59,8 +59,25 @@ nor able to evade the reward under max-pooling.
 **Combining references and pooling.** Multiple references are combined by **union**: a torsion's
 energy is the maximum over the references that resolve it (strained if *any* reference finds its
 angle unusual). The **pose strain** is the maximum per-torsion energy over the ligand
-(**max-pool**): a pose is as strained as its worst torsion. An optional logistic calibration
-`s ↦ σ(a·s + b)` maps the score to a strain probability in [0,1] for use as a soft reward.
+(**max-pool**): a pose is as strained as its worst torsion.
+
+**Design reward.** For reinforcement-learning or ranking use, `pose_reward()` maps the pose strain
+`s` to a smooth reward in [0, 1] (higher = lower strain) via a **saturating softplus shoulder**
+
+&nbsp;&nbsp;&nbsp;&nbsp;`r(s) = exp( −λ · softplus(β·(s − s₀)) / β )`,&nbsp;&nbsp;
+`λ = ln 2 / softplus_excess(s_½)`,
+
+which is **flat at 1 for `s ≤ s₀`** (the *crystallographic region*), passes through **0.5 at the knee
+`s_½`**, and decays toward 0 for highly-strained poses (keeping a gentle tail gradient rather than a
+hard cut). The plateau is deliberate: real crystals span a range of small strains, so rewarding a pose
+for being *less* strained than a typical crystal would spend gradient — and trade against other
+objectives — on differences below the noise floor of experimental structures; the reward should bite
+only on genuine outliers. The anchors are **label-free**: scoring 4,788 PDBBind crystal ligands (real,
+hence ~unstrained; held out of the library) with the union(custom-CSD + LigBoundConf) reference at
+`N_min = 50` puts `s₀ = 3.0` at ~p76 of that distribution and `s_½ = 4.95` at p95 (defaults
+`REWARD_PLATEAU`, `REWARD_KNEE`, `REWARD_BETA = 8`). Because the anchors live on the pose-strain scale of
+the reference in use, a different `--reference` warrants recalibration: score a crystal set with it and
+pass the percentiles from `calibrate_shoulder(crystal_energies)` to `pose_reward()`.
 
 **Validation.** We validated against strain measured by relaxation with the AIMNet2 neural-network
 potential (ωB97M + CPCM implicit solvent). For each pose we relaxed the isolated ligand to its
@@ -80,18 +97,20 @@ calibrating against AIMNet2 ΔE in kcal/mol is a natural extension.
 
 ```bash
 torsion-strain --pdb complex.pdb --smiles "Cc1ccccc1C(=O)N2CCOCC2"
-# pose_strain=3.42  n_torsions=17  n_covered=17
+# pose_strain=3.42  reward=0.8600  n_torsions=17  n_covered=17
 
 torsion-strain --pdb pose.pdb --smiles "..." --reference ligboundconf --min-n 50
-torsion-strain --batch poses.txt --smiles "<shared smiles>" --out strain.csv
+torsion-strain --batch poses.txt --smiles "<shared smiles>" --out strain.csv   # CSV has pose_strain + reward
 torsion-strain --list-references                 # bundled libraries
+# tune the reward shoulder: --reward-plateau S0 --reward-knee S_HALF --reward-beta B
 ```
 
 ```python
-from genbench3d.torsion_strain import TorsionStrainLibrary
+from genbench3d.torsion_strain import TorsionStrainLibrary, pose_reward
 from genbench3d.pose_scorer import load_any
 lib = TorsionStrainLibrary.load(["ligboundconf"], min_n=50)      # union: add more names/paths
-print(lib.score_mol(load_any("pose.pdb", "..."))["pose_strain"])
+s = lib.score_mol(load_any("pose.pdb", "..."))["pose_strain"]
+print(s, pose_reward(s))                                         # strain energy, [0,1] design reward
 ```
 
 The **only bundled reference is `ligboundconf`** — the strongest openly-redistributable torsional-strain
