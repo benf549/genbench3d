@@ -22,6 +22,55 @@ predicted/minimized poses.
 > bundled open reference libraries. The upstream benchmark code is untouched and stays importable.
 > See `LICENSE` (MIT) and the upstream repo for attribution.
 
+## Quickstart — run the pose-strain reward
+
+**Install** into a fresh environment (no `PYTHONPATH` needed):
+
+```bash
+pip install .
+```
+
+**Score a pose.** One command prints the strain energy and a smooth **`[0, 1]` design reward**
+(higher = lower strain). Input is a pose file (PDB/SDF/MOL2) + the ligand SMILES:
+
+```bash
+torsion-strain --pdb complex.pdb --smiles "<LIGAND_SMILES>"
+# -> pose_strain=3.42  reward=0.8600  n_torsions=17  n_covered=17
+
+# batch: one shared SMILES, writes a CSV with pose_strain + reward columns
+torsion-strain --batch poses.txt --smiles "<LIGAND_SMILES>" --out strain.csv
+```
+
+```python
+from genbench3d.torsion_strain import TorsionStrainLibrary, pose_reward
+from genbench3d.pose_scorer import load_any
+lib = TorsionStrainLibrary.load(["ligboundconf"], min_n=50)
+s   = lib.score_mol(load_any("pose.pdb", "<LIGAND_SMILES>"))["pose_strain"]
+print(s, pose_reward(s))          # strain energy, [0, 1] design reward
+```
+
+**It works out of the box** on the bundled `ligboundconf` reference — no CSD license or dataset needed.
+
+### Recommended settings
+
+| setup | `--reference` | `--min-n` | reward anchors |
+|---|---|---|---|
+| **Best — validated** | `ligboundconf+/abs/path/to/csd_custom.pkl` | `50` | defaults (`s₀ = 3.0`, `s½ = 4.95`) |
+| **No CSD (out-of-the-box default)** | `ligboundconf` | `50` | `--reward-plateau 2.72 --reward-knee 4.63` |
+
+- **`--min-n 50`** and **max-pool** are the validated defaults (already the built-in defaults — the table just
+  makes them explicit).
+- **The strongest detector is the union** of LigBoundConf with a locally-built **CSD** library (CCDC-licensed —
+  see [Building references](#building-references-torsion-strain)). Reference your built pickle **by path** and
+  `+`-join it: `--reference "ligboundconf+/abs/path/to/csd_custom.pkl"`. The reward's default anchors
+  (`REWARD_PLATEAU = 3.0`, `REWARD_KNEE = 4.95`) are calibrated for exactly this union.
+- **Without CSD, the strain energy is still valid**, but LigBoundConf-alone energies sit on a slightly lower
+  scale, so the *default* reward runs a touch lenient. For a correctly-calibrated LigBoundConf-only reward pass
+  **`--reward-plateau 2.72 --reward-knee 4.63`** (its own p76/p95 crystal anchors), or recalibrate any reference
+  with `calibrate_shoulder(crystal_energies)`.
+
+The finalized reward — its Methods, calibration figure, and validation — is documented next.
+
 ## Torsion-strain reward (recommended)
 
 `torsion-strain` estimates the conformational strain of a ligand pose from its rotatable torsions

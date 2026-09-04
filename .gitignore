@@ -11,6 +11,11 @@ genbench3d/data/weights/*/*.tmp
 **/CSD_Drug_Subset.mol2
 **/csd_drug_ref_*.p
 refdata/csd_drug/
+# processed CSD torsion library (any name) — also licensed-derived, never commit.
+**/csd_custom*.pkl
+**/csd_custom*_ref_*.p
+refdata/csd_custom/
+genbench3d/data/torsion_libs/csd*.pkl
 
 # Python build / cache artifacts
 __pycache__/
