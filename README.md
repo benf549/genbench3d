@@ -211,6 +211,17 @@ python scripts/build_torsion_lib.py --glob '/db/PDBBind/**/*_ligand.sdf' \
 
 #### CSD subset (licensed — not distributed)
 
+![LigBoundConf vs custom-CSD strain agreement on design poses](docs/img/lbc_vs_csd_agreement.png)
+
+***Figure — Do you need to build the CSD library?*** Per-design pose torsion strain under the **bundled
+LigBoundConf** reference (x) vs a **custom CSD** library (y), across 48,013 design poses (hexbin density,
+log). The two agree strongly — **Spearman ρ = 0.89** — so for most poses the bundled default already gives
+essentially the CSD answer, and **LigBoundConf-only is enough for most users**. They disagree by > 0.5 on only
+a minority of poses (CSD stricter on 13%, LigBoundConf stricter on 24%); the shipped **union** takes the
+worst-of-both there. **Build the CSD subset if** you want that extra strictness on the divergent tail or the
+exact validated union calibration (`s₀ = 3.0`, `s½ = 4.95`); otherwise the out-of-the-box LigBoundConf default
+is a close approximation.
+
 The best single detector is a **custom CSD subset**: ~10⁵ high-quality, drug-relevant, *unbound* organic
 crystals filtered from the full Cambridge Structural Database. It is CCDC-licensed — **neither the
 structures nor a library derived from them are committed** — but licensed users can regenerate it. Copy
