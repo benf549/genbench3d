@@ -25,6 +25,7 @@ dependencies = [
 Upstream = "https://github.com/bbaillif/genbench3d"
 
 [project.scripts]
+torsion-strain = "genbench3d.torsion_strain:main"
 sscore = "genbench3d.pose_scorer:main"
 pose-validity = "genbench3d.pose_validity:main"
 
@@ -34,9 +35,10 @@ pose-validity = "genbench3d.pose_validity:main"
 include = ["genbench3d*"]
 
 [tool.setuptools.package-data]
-# Ship the chunked reference weights + manifests + pattern counts as package data.
+# Ship the chunked s-value reference weights + the small bundled torsion-strain libraries.
 genbench3d = [
     "data/weights/*/*.part*",
     "data/weights/*/manifest.json",
     "data/weights/*/*_pattern_counts.json",
+    "data/torsion_libs/*.pkl",
 ]

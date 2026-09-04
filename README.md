@@ -2,20 +2,142 @@
 
 A fork of [GenBench3D](https://github.com/bbaillif/genbench3d) (Baillif et al. 2024,
 [arXiv:2407.04424](https://arxiv.org/abs/2407.04424)) packaged as a small, installable
-**pose scorer**. It computes the paper's **s-value** — the geometric mean of per-geometry
-*q-values* (a value's KDE likelihood normalised by the density's mode) against a reference
-conformer library — with the default configured as a **torsional-strain reward** for
-protein–ligand design poses.
+**pose scorer** for protein–ligand design poses. It provides two complementary, geometry-only
+strain scorers, both taking a **pose file (PDB/SDF/MOL2) + the ligand SMILES**:
 
-Input is a **PDB complex + the ligand SMILES**. The ligand is pulled from the PDB and its bond
-orders assigned from the SMILES template (`AssignBondOrdersFromTemplate`), with a halogen/H
-over-bond prune for robustness on predicted/minimized poses.
+1. **`torsion-strain`** *(recommended)* — a histogram-based **torsional-strain reward** validated
+   against AIMNet2 (ωB97M+CPCM) relaxation. Each rotatable torsion is scored by how unusual its
+   dihedral angle is relative to a reference of experimental structures, and the pose score is the
+   most-strained torsion (max-pool). This is the finalized metric; its Methods are below.
+2. **`sscore`** — the paper's **s-value**, the geometric mean of per-geometry *q-values* (a value's
+   KDE likelihood normalised by the density's mode); plus **`pose-validity`** (GenBench3D's
+   Validity3D bond/angle/clash/pucker gate).
 
-> This fork adds `genbench3d.pose_scorer` (+ the `sscore` CLI), a composable reference layer,
-> and the bundled PDBBind/LigBoundConf weights. The upstream benchmark code is untouched and
-> stays importable. See `LICENSE` (MIT) and the upstream repo for attribution.
+Ligands are pulled from the file and their bond orders assigned from the SMILES template
+(`AssignBondOrdersFromTemplate`), with a halogen/H over-bond prune for robustness on
+predicted/minimized poses.
 
-## What it measures
+> This fork adds `genbench3d.torsion_strain` (+ the `torsion-strain` CLI), `genbench3d.pose_scorer`
+> (+ `sscore`), `genbench3d.pose_validity` (+ `pose-validity`), a composable reference layer, and
+> bundled open reference libraries. The upstream benchmark code is untouched and stays importable.
+> See `LICENSE` (MIT) and the upstream repo for attribution.
+
+## Torsion-strain reward (recommended)
+
+`torsion-strain` estimates the conformational strain of a ligand pose from its rotatable torsions
+alone — a fast, license-clean, geometry-only surrogate for a QM strain calculation, intended as a
+reward for structure-based generative design.
+
+### Methods
+
+**Torsion patterns.** For a pose we take every *rotatable* torsion: a single, non-ring bond b–c
+between two heavy atoms, with each heavy-atom neighbour a of b and d of c, giving the dihedral
+a–b–c–d. Each torsion is assigned a coarse *pattern* from the atom types — atomic number,
+aromaticity, and hybridization — of its four atoms, canonicalized so that a–b–c–d and d–c–b–a map
+to one key. A two-atom *backoff* pattern is formed from the central pair (b, c) alone.
+
+**Reference distributions.** From a reference set of experimentally-determined 3D structures we
+accumulate, per pattern, a histogram of its dihedral over 36 bins of 10°. Because the sign of a
+dihedral is arbitrary, each observation is entered at both θ and −θ. Histograms are smoothed with a
+wrapped Gaussian kernel (σ = 1.5 bins ≈ 15°) and normalized to a density p(θ); we retain the
+density, its mode p\* = maxθ p, and the observation count N.
+
+**Per-torsion strain energy.** A torsion at angle θ is scored against the finest pattern with
+adequate support: the four-atom pattern if N ≥ N_min, else the two-atom backoff if N ≥ N_min, else
+the torsion is *uncovered*. A covered torsion's energy is
+
+&nbsp;&nbsp;&nbsp;&nbsp;`e(θ) = −log( p(θ) / p* + ε )`,&nbsp;&nbsp; ε = 10⁻⁴,
+
+a pseudo-energy in [0, −log ε ≈ 9.2] that is 0 at the modal angle and grows as the torsion enters
+low-probability regions. The support threshold **N_min = 50** (per-pattern *count thresholding*)
+stops a sparsely-observed pattern's noisy density from emitting spurious high energies; below it the
+score falls back to the well-sampled two-atom pattern. Torsions uncovered by every reference
+(chemistry absent from the data) receive a **neutral energy** — the reference's median per-torsion
+energy — rather than the ceiling, so out-of-distribution torsions are neither spuriously penalized
+nor able to evade the reward under max-pooling.
+
+**Combining references and pooling.** Multiple references are combined by **union**: a torsion's
+energy is the maximum over the references that resolve it (strained if *any* reference finds its
+angle unusual). The **pose strain** is the maximum per-torsion energy over the ligand
+(**max-pool**): a pose is as strained as its worst torsion. An optional logistic calibration
+`s ↦ σ(a·s + b)` maps the score to a strain probability in [0,1] for use as a soft reward.
+
+**Validation.** We validated against strain measured by relaxation with the AIMNet2 neural-network
+potential (ωB97M + CPCM implicit solvent). For each pose we relaxed the isolated ligand to its
+nearest local minimum and recorded, per torsion, the angular change |Δθ|; a torsion that rotates
+substantially on relaxation was genuinely strained. The pose max-torsion energy correlates with the
+pose-maximum |Δθ| at Spearman **ρ = 0.51** on protein-conditioned design poses and **ρ = 0.49** on
+an independent set of 3,744 PDBBind crystal ligands — the latter showing a reference of *unbound*
+crystal geometry transfers to *bound*, cross-domain poses. Among references, a curated **CSD**
+subset (unbound crystals) is the strongest single detector, **LigBoundConf** (bound conformers) the
+strongest openly-redistributable one, and their union the best overall; a **PDBBind**-bound
+reference is measurably weaker for torsional strain. Note that angular strain |Δθ| conflates soft
+and stiff rotors (a 45° swing is ~2–3 kcal/mol for a stiff torsion but < 0.5 for a floppy one); the
+empirical density already encodes stiffness (a stiff torsion has a narrow distribution), and
+calibrating against AIMNet2 ΔE in kcal/mol is a natural extension.
+
+### Usage
+
+```bash
+torsion-strain --pdb complex.pdb --smiles "Cc1ccccc1C(=O)N2CCOCC2"
+# pose_strain=3.42  n_torsions=17  n_covered=17
+
+torsion-strain --pdb pose.pdb --smiles "..." --reference ligboundconf --min-n 50
+torsion-strain --batch poses.txt --smiles "<shared smiles>" --out strain.csv
+torsion-strain --list-references                 # bundled libraries
+```
+
+```python
+from genbench3d.torsion_strain import TorsionStrainLibrary
+from genbench3d.pose_scorer import load_any
+lib = TorsionStrainLibrary.load(["ligboundconf"], min_n=50)      # union: add more names/paths
+print(lib.score_mol(load_any("pose.pdb", "..."))["pose_strain"])
+```
+
+The **only bundled reference is `ligboundconf`** — the strongest openly-redistributable torsional-strain
+detector we measured (it also beats a full-PDBBind reference, which is why PDBBind is *not* shipped). The
+strongest combination, `ligboundconf + <csd_custom>`, needs a locally-built CSD library (licensed — see
+[Building references](#building-references-torsion-strain)). Uncoverable poses return `NaN`, never
+crashing a batch.
+
+### Building references (torsion-strain)
+
+Any set of 3D structures becomes a library via `scripts/build_torsion_lib.py` (all patterns are kept with
+their support count; `N_min` is applied at score time, so it need not be chosen here):
+
+```bash
+# LigBoundConf (public) — rebuilds the bundled default
+python scripts/build_torsion_lib.py --in S2_LigBoundConf_minimized.sdf \
+    --name ligboundconf --out genbench3d/data/torsion_libs/ligboundconf.pkl
+# PDBBind crystal ligands (open) — for comparison; weaker than LigBoundConf, so not bundled
+python scripts/build_torsion_lib.py --glob '/db/PDBBind/**/*_ligand.sdf' \
+    --name pdbbind --out /tmp/pdbbind.pkl
+```
+
+#### CSD subset (licensed — not distributed)
+
+The best single detector is a **custom CSD subset**: ~10⁵ high-quality, drug-relevant, *unbound* organic
+crystals filtered from the full Cambridge Structural Database. It is CCDC-licensed — **neither the
+structures nor a library derived from them are committed** — but licensed users can regenerate it. Copy
+`.env.example` → `.env`, set `CSDHOME` (and, *only* if your host is not already activated,
+`CCDC_LICENSING_CONFIGURATION`), then in the CCDC `csd-python-api` python:
+
+```bash
+python scripts/curate_csd_subset.py --out refdata/csd_custom/CSD_custom.mol2 --stride 3
+```
+
+which filters for organic, ordered, well-refined (R ≤ 7.5%), ambient-pressure, drug-relevant crystals
+(element set, MW 150–800, ≥ 2 rotatable bonds; largest component only) and writes a MOL2 + refcode list.
+Build the library (RDKit side) and use it, unioned with the bundled default:
+
+```bash
+python scripts/build_torsion_lib.py --in refdata/csd_custom/CSD_custom.mol2 \
+    --name csd_custom --out refdata/csd_custom/csd_custom.pkl
+torsion-strain --pdb pose.pdb --smiles "..." \
+    --reference genbench3d/data/torsion_libs/ligboundconf.pkl+refdata/csd_custom/csd_custom.pkl
+```
+
+## The s-value scorer (`sscore`)
 
 The paper's headline s-value covers **bonds + valence angles** and deliberately *excludes*
 torsions (binding-induced torsional strain is legitimate, not a geometry error). This tool's
