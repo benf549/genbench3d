@@ -79,6 +79,21 @@ hence ~unstrained; held out of the library) with the union(custom-CSD + LigBound
 the reference in use, a different `--reference` warrants recalibration: score a crystal set with it and
 pass the percentiles from `calibrate_shoulder(crystal_energies)` to `pose_reward()`.
 
+![Label-free calibration of the pose-strain reward](docs/img/reward_calibration.png)
+
+***Figure — Label-free calibration of the pose-strain reward.*** Grey histogram (left axis): pose strain
+energy `s` for **4,788 PDBBind crystal ligands** — real, hence essentially unstrained, structures **held out
+of the library** — where `s` is the max over a ligand's non-ring torsions of the −log(density/mode) energy
+under the **union of the custom-CSD and LigBoundConf** references (`N_min = 50`). Blue curve (right axis): the
+reward `r(s)`, a **saturating softplus shoulder** that is **flat at 1 through `s₀ = 3.0`** (≈ the 76th
+percentile of the crystal distribution — the *crystallographic region*, shaded), crosses **`r = 0.5` at the
+knee `s½ = 4.95`** (the crystal 95th percentile), and decays toward 0 for poses more strained than real
+crystals. The plateau is the point: the reward does **not** distinguish among poses that are already as
+unstrained as experimental structures, so it bites only on genuine outliers and can be combined
+multiplicatively with other objectives without trading physically-irrelevant strain against them.
+Independently, on 3,744 held-out PDBBind ligands the reward tracks a quantum-mechanical strain ground truth
+(AIMNet2 pose-max |Δθ|) at Spearman **−0.50** (strain up → reward down).
+
 **Validation.** We validated against strain measured by relaxation with the AIMNet2 neural-network
 potential (ωB97M + CPCM implicit solvent). For each pose we relaxed the isolated ligand to its
 nearest local minimum and recorded, per torsion, the angular change |Δθ|; a torsion that rotates
