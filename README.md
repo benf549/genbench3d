@@ -91,8 +91,8 @@ knee `s½ = 4.95`** (the crystal 95th percentile), and decays toward 0 for poses
 crystals. The plateau is the point: the reward does **not** distinguish among poses that are already as
 unstrained as experimental structures, so it bites only on genuine outliers and can be combined
 multiplicatively with other objectives without trading physically-irrelevant strain against them.
-Independently, on 3,744 held-out PDBBind ligands the reward tracks a quantum-mechanical strain ground truth
-(AIMNet2 pose-max |Δθ|) at Spearman **−0.50** (strain up → reward down).
+The strain metric underlying this reward is validated directly against a quantum-mechanical ground truth
+(AIMNet2) on held-out crystals — see the validation figure below.
 
 **Validation.** We validated against strain measured by relaxation with the AIMNet2 neural-network
 potential (ωB97M + CPCM implicit solvent). For each pose we relaxed the isolated ligand to its
@@ -107,6 +107,18 @@ reference is measurably weaker for torsional strain. Note that angular strain |�
 and stiff rotors (a 45° swing is ~2–3 kcal/mol for a stiff torsion but < 0.5 for a floppy one); the
 empirical density already encodes stiffness (a stiff torsion has a narrow distribution), and
 calibrating against AIMNet2 ΔE in kcal/mol is a natural extension.
+
+![Torsion strain vs AIMNet2 quantum strain on held-out PDBBind crystals](docs/img/strain_vs_aimnet_pdbbind.png)
+
+***Figure — Torsion strain vs a quantum-mechanical strain ground truth.*** For each of **3,744 held-out
+PDBBind crystal ligands**: the torsion strain energy (y, max over non-ring torsions of −log(density/mode)
+under the union CSD + LigBoundConf reference) against **AIMNet2 pose-max |Δθ|** (x) — the largest per-torsion
+angular change when the isolated ligand is relaxed to its nearest local minimum, so a torsion that swings far
+on relaxation was genuinely strained in the pose. Hexbin = ligand density (log); orange = running median with
+IQR band. The metric rises monotonically with the quantum strain (**Spearman +0.50**), on a *cross-domain*
+test — an *unbound*-crystal reference scoring *bound* crystal poses. Dotted blue lines mark where the shipped
+reward saturates (`s₀ = 3`) and crosses 0.5 (`s½ = 4.95`): crystals below ~45° |Δθ| mostly sit in the plateau
+(reward ≈ 1), and the strain climbs into the reward's transition region as the quantum strain grows.
 
 ### Usage
 
